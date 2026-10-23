@@ -1,0 +1,199 @@
+const { createApp, ref, reactive, computed, nextTick } = Vue;
+
+const SECTOR_ICONS = {
+  "Banks": "\u{1F3E6}", "Mining": "⛏️", "Mining / Chemicals": "⚗️",
+  "Property": "\u{1F3E2}", "Telecoms": "\u{1F4E1}", "Insurance": "\u{1F6E1}️",
+  "Food": "\u{1F35E}", "Healthcare": "\u{1F3E5}", "Tech / Media": "\u{1F4BB}",
+  "Luxury Goods": "\u{1F48E}", "Consumer Staples": "\u{1F6D2}",
+  "Consumer Discretionary": "\u{1F6CD}️", "Industrials": "\u{1F3ED}",
+  "Logistics": "\u{1F69A}", "Education": "\u{1F393}", "Hospitality & Gaming": "\u{1F3B0}",
+  "Packaging": "\u{1F4E6}", "Agriculture / Chemicals": "\u{1F33E}",
+  "Diversified Financials": "\u{1F4B0}", "Investment Holding": "\u{1F3DB}️",
+};
+
+const COLOR = { blue: "#2a78d6", red: "#e34948", aqua: "#1baf7a", muted: "#898781", grid: "#e1e0d9", ink: "#0b0b0b" };
+
+Chart.register(ChartDataLabels);
+Chart.defaults.set("plugins.datalabels", { display: false });
+
+createApp({
+  setup() {
+    const appEl = document.getElementById("app");
+    const minTickers = Number(appEl.dataset.min || 2);
+    const maxTickers = Number(appEl.dataset.max || 25);
+
+    const universe = reactive({});
+    const bySector = reactive({});
+    const selected = reactive([]);
+    const search = ref("");
+    const view = ref("grid");
+    const currentSector = ref(null);
+    const loading = ref(false);
+    const errorMsg = ref("");
+    const result = ref(null);
+    const chartCanvas = ref(null);
+    let chartInstance = null;
+
+    async function loadUniverse() {
+      const res = await fetch("/api/universe");
+      const data = await res.json();
+      Object.assign(universe, data);
+
+      const grouped = {};
+      for (const [ticker, info] of Object.entries(data)) {
+        (grouped[info.sector] ??= []).push(ticker);
+      }
+      for (const tickers of Object.values(grouped)) {
+        tickers.sort((a, b) => data[a].name.localeCompare(data[b].name));
+      }
+      Object.assign(bySector, grouped);
+    }
+
+    const sectors = computed(() =>
+      Object.keys(bySector)
+        .sort()
+        .map((name) => ({
+          name,
+          tickers: bySector[name],
+          selectedCount: bySector[name].filter((t) => selected.includes(t)).length,
+        }))
+    );
+
+    const searchResults = computed(() => {
+      const q = search.value.trim().toLowerCase();
+      if (!q) return [];
+      return Object.keys(universe)
+        .filter((t) => t.toLowerCase().includes(q) || universe[t].name.toLowerCase().includes(q))
+        .sort((a, b) => universe[a].name.localeCompare(universe[b].name));
+    });
+
+    const canBuild = computed(() => selected.length >= minTickers && selected.length <= maxTickers);
+
+    function isSelected(ticker) {
+      return selected.includes(ticker);
+    }
+    function isDisabled(ticker) {
+      return !isSelected(ticker) && selected.length >= maxTickers;
+    }
+    function chipClass(ticker) {
+      return { "chip-selected": isSelected(ticker), "chip-disabled": isDisabled(ticker) };
+    }
+    function toggle(ticker) {
+      const i = selected.indexOf(ticker);
+      if (i >= 0) selected.splice(i, 1);
+      else if (selected.length < maxTickers) selected.push(ticker);
+    }
+    function clearSelection() {
+      selected.splice(0, selected.length);
+    }
+    function openSector(name) {
+      currentSector.value = name;
+      view.value = "detail";
+    }
+    function shortTicker(t) {
+      return t.replace(".JO", "");
+    }
+    function sectorIcon(name) {
+      return SECTOR_ICONS[name] || "\u{1F4C8}";
+    }
+    function pct(x) {
+      return `${(x * 100).toFixed(1)}%`;
+    }
+    function sortedWeights(weights) {
+      return Object.entries(weights).sort((a, b) => b[1] - a[1]);
+    }
+
+    const portfolioCards = computed(() =>
+      result.value
+        ? [
+            { label: "Max-Sharpe portfolio", data: result.value.max_sharpe },
+            { label: "Min-variance portfolio", data: result.value.min_variance },
+          ]
+        : []
+    );
+
+    async function buildPortfolio() {
+      errorMsg.value = "";
+      loading.value = true;
+      result.value = null;
+      try {
+        const res = await fetch("/api/optimize", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tickers: [...selected] }),
+        });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.detail || "Something went wrong");
+        result.value = body;
+        await nextTick();
+        renderChart(body);
+        document.getElementById("results")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      } catch (err) {
+        errorMsg.value = err.message;
+      } finally {
+        loading.value = false;
+      }
+    }
+
+    function renderChart(data) {
+      if (!chartCanvas.value) return;
+      const frontierPoints = data.frontier.map((p) => ({ x: p.risk, y: p.return })).sort((a, b) => a.x - b.x);
+      const assetPoints = data.assets.map((a) => ({ x: a.ann_vol, y: a.ann_return, label: shortTicker(a.ticker) }));
+
+      const datasets = [
+        {
+          type: "line", label: "Efficient frontier", data: frontierPoints,
+          borderColor: COLOR.blue, borderWidth: 2, pointRadius: 0, fill: false, tension: 0.15, order: 3,
+        },
+        {
+          type: "scatter", label: "Individual stocks", data: assetPoints,
+          backgroundColor: COLOR.muted, pointRadius: 5, order: 2,
+          datalabels: { display: true, formatter: (v) => v.label, align: "top", color: COLOR.ink, font: { size: 10 } },
+        },
+        {
+          type: "scatter", label: "Min variance",
+          data: [{ x: data.min_variance.risk, y: data.min_variance.return, label: "Min Var" }],
+          backgroundColor: COLOR.aqua, pointStyle: "rectRot", pointRadius: 9, order: 1,
+          datalabels: { display: true, formatter: (v) => v.label, align: "bottom", color: COLOR.aqua, font: { size: 11, weight: "bold" } },
+        },
+        {
+          type: "scatter", label: "Max Sharpe",
+          data: [{ x: data.max_sharpe.risk, y: data.max_sharpe.return, label: "Max Sharpe" }],
+          backgroundColor: COLOR.red, pointStyle: "star", pointRadius: 11, order: 1,
+          datalabels: { display: true, formatter: (v) => v.label, align: "top", color: COLOR.red, font: { size: 11, weight: "bold" } },
+        },
+      ];
+
+      if (chartInstance) chartInstance.destroy();
+      chartInstance = new Chart(chartCanvas.value, {
+        type: "scatter",
+        data: { datasets },
+        options: {
+          responsive: true,
+          interaction: { mode: "nearest", intersect: true },
+          plugins: {
+            legend: { position: "bottom" },
+            tooltip: {
+              callbacks: {
+                label: (item) => `${item.raw.label ?? ""}  risk ${pct(item.raw.x)} · return ${pct(item.raw.y)}`,
+              },
+            },
+          },
+          scales: {
+            x: { title: { display: true, text: "Annualized volatility (risk)" }, ticks: { callback: (v) => pct(v) }, grid: { color: COLOR.grid } },
+            y: { title: { display: true, text: "Annualized expected return" }, ticks: { callback: (v) => pct(v) }, grid: { color: COLOR.grid } },
+          },
+        },
+      });
+    }
+
+    loadUniverse();
+
+    return {
+      universe, bySector, selected, search, view, currentSector, loading, errorMsg, result, chartCanvas,
+      maxTickers, sectors, searchResults, canBuild, portfolioCards,
+      isSelected, isDisabled, chipClass, toggle, clearSelection, openSector,
+      shortTicker, sectorIcon, pct, sortedWeights, buildPortfolio,
+    };
+  },
+}).mount("#app");

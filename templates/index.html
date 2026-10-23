@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JSE Portfolio Builder</title>
+<link rel="stylesheet" href="/static/style.css?v=__STYLE_CSS_V__">
+<script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.prod.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
+</head>
+<body>
+<div id="app" data-min="__MIN_TICKERS__" data-max="__MAX_TICKERS__" v-cloak>
+  <main>
+    <div class="hero-shell">
+      <header>
+        <h1>JSE Portfolio Builder</h1>
+        <p class="subtitle">Pick up to {{ maxTickers }} JSE-listed stocks, browsing by sector or searching directly.
+           Live prices are fetched from Yahoo Finance, the efficient frontier is computed on the spot &mdash;
+           long-only mean-variance, no caps.</p>
+      </header>
+
+      <section class="picker">
+      <!-- persistent selection summary -->
+      <div id="selectionBar">
+        <div class="selection-header">
+          <h2>Your selection</h2>
+          <div class="selection-actions">
+            <span class="count">{{ selected.length }} / {{ maxTickers }} selected</span>
+            <button v-if="selected.length" class="clear-btn" @click="clearSelection">Clear all</button>
+          </div>
+        </div>
+
+        <transition-group name="chip" tag="div" class="chips" v-if="selected.length">
+          <span v-for="ticker in selected" :key="ticker" class="chip chip-selected removable">
+            {{ shortTicker(ticker) }}<small>{{ universe[ticker]?.name }}</small>
+            <button class="remove-x" @click="toggle(ticker)" :aria-label="'Remove ' + ticker">&times;</button>
+          </span>
+        </transition-group>
+        <p v-else class="muted">Search or browse a sector below and click stocks to add them.</p>
+
+        <button class="build-btn" :disabled="!canBuild || loading" @click="buildPortfolio">
+          {{ loading ? "Building…" : "Build portfolio" }}
+        </button>
+        <p v-if="errorMsg" class="error">{{ errorMsg }}</p>
+      </div>
+
+      <div class="search-row">
+        <input type="search" v-model="search" placeholder="Search by ticker or company name…" class="search-input">
+      </div>
+
+      <transition name="fade" mode="out-in">
+        <!-- search results -->
+        <div v-if="search.trim()" key="search">
+          <h2>Search results <span class="muted">({{ searchResults.length }})</span></h2>
+          <div class="chips chip-grid">
+            <label v-for="ticker in searchResults" :key="ticker" class="chip" :class="chipClass(ticker)">
+              <input type="checkbox" :checked="isSelected(ticker)" :disabled="isDisabled(ticker)" @change="toggle(ticker)">
+              <span>{{ shortTicker(ticker) }}<small>{{ universe[ticker].name }} &middot; {{ universe[ticker].sector }}</small></span>
+            </label>
+          </div>
+          <p v-if="!searchResults.length" class="muted">No matches.</p>
+        </div>
+
+        <!-- sector grid -->
+        <div v-else-if="view === 'grid'" key="grid">
+          <h2>1. Browse by sector</h2>
+          <div class="sector-grid">
+            <button v-for="s in sectors" :key="s.name" class="sector-tile" :class="{ 'has-selection': s.selectedCount }" @click="openSector(s.name)">
+              <span v-if="s.selectedCount" class="sector-badge-count">{{ s.selectedCount }}</span>
+              <span class="sector-icon-badge">{{ sectorIcon(s.name) }}</span>
+              <span class="sector-name">{{ s.name }}</span>
+              <span class="sector-meta">{{ s.tickers.length }} stocks</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- sector detail -->
+        <div v-else key="detail">
+          <button class="back-btn" @click="view = 'grid'">&larr; Back to sectors</button>
+          <h2>{{ sectorIcon(currentSector) }} {{ currentSector }}</h2>
+          <div class="chips chip-grid">
+            <label v-for="ticker in bySector[currentSector]" :key="ticker" class="chip" :class="chipClass(ticker)">
+              <input type="checkbox" :checked="isSelected(ticker)" :disabled="isDisabled(ticker)" @change="toggle(ticker)">
+              <span>{{ shortTicker(ticker) }}<small>{{ universe[ticker].name }}</small></span>
+            </label>
+          </div>
+        </div>
+      </transition>
+      </section>
+    </div>
+
+    <transition name="fade">
+      <section id="results" v-if="result">
+        <h2>2. Results</h2>
+        <p class="muted">Based on live daily prices, {{ result.window.start }} to {{ result.window.end }}
+           ({{ result.window.trading_days }} trading days). Risk-free rate: {{ pct(result.risk_free_rate) }}.</p>
+
+        <div class="chart-wrap"><canvas ref="chartCanvas" height="420"></canvas></div>
+
+        <div class="portfolios">
+          <div class="portfolio-card" v-for="p in portfolioCards" :key="p.label">
+            <h3>{{ p.label }}</h3>
+            <table>
+              <thead><tr><th>Stock</th><th>Weight</th></tr></thead>
+              <tbody>
+                <tr v-for="[ticker, w] in sortedWeights(p.data.weights)" :key="ticker">
+                  <td>{{ shortTicker(ticker) }} <span class="muted">{{ universe[ticker]?.name }}</span></td>
+                  <td>{{ pct(w) }}</td>
+                </tr>
+              </tbody>
+              <tfoot>
+                <tr><td>Expected return</td><td>{{ pct(p.data.return) }}</td></tr>
+                <tr><td>Volatility</td><td>{{ pct(p.data.risk) }}</td></tr>
+                <tr v-if="p.data.sharpe !== undefined"><td>Sharpe ratio</td><td>{{ p.data.sharpe.toFixed(2) }}</td></tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+      </section>
+    </transition>
+
+    <p v-if="loading" class="loading-text">Fetching live data and optimizing&hellip;</p>
+  </main>
+</div>
+
+<script src="/static/app.js?v=__APP_JS_V__"></script>
+</body>
+</html>
