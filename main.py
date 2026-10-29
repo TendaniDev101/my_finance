@@ -4,6 +4,7 @@ JSE Portfolio Builder - FastAPI backend.
 Run with:  uvicorn main:app --reload --port 8000   (from inside webapp/)
 Then open: http://127.0.0.1:8000
 """
+import json
 import os
 
 from fastapi import FastAPI, HTTPException, Request
@@ -14,7 +15,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
 from pathlib import Path
 
-from portfolio_engine import UNIVERSE, MIN_TICKERS, MAX_TICKERS, build_portfolio, PortfolioError
+from portfolio_engine import UNIVERSE, MIN_TICKERS, MAX_TICKERS, build_portfolio, get_current_prices, PortfolioError
+import db
 
 BASE_DIR = Path(__file__).parent
 
@@ -56,6 +58,67 @@ class OptimizeRequest(BaseModel):
         return v
 
 
+class Holding(BaseModel):
+    ticker: str
+    shares: float
+
+
+class PortfolioValueRequest(BaseModel):
+    holdings: list[Holding]
+
+    @field_validator("holdings")
+    @classmethod
+    def check_holdings(cls, v):
+        if not v:
+            raise ValueError("No holdings provided")
+        return v
+
+
+class SavedHolding(BaseModel):
+    ticker: str
+    name: str
+    weight: float
+    price_at_save: float
+    shares: float
+
+
+class SavePortfolioRequest(BaseModel):
+    kind: str
+    principal: float
+    holdings: list[SavedHolding]
+    expected_return: float | None = None
+    expected_risk: float | None = None
+
+    @field_validator("kind")
+    @classmethod
+    def check_kind(cls, v):
+        if v not in ("max_sharpe", "min_variance"):
+            raise ValueError("kind must be 'max_sharpe' or 'min_variance'")
+        return v
+
+    @field_validator("holdings")
+    @classmethod
+    def check_holdings(cls, v):
+        if not v:
+            raise ValueError("No holdings provided")
+        return v
+
+
+def _serialize_saved(row: dict) -> dict:
+    holdings = row["holdings"]
+    if isinstance(holdings, str):  # psycopg may hand back jsonb as raw text
+        holdings = json.loads(holdings)
+    return {
+        "id": str(row["id"]),
+        "kind": row["kind"],
+        "saved_at": row["saved_at"].isoformat(),
+        "principal": float(row["principal"]),
+        "expected_return": float(row["expected_return"]) if row["expected_return"] is not None else None,
+        "expected_risk": float(row["expected_risk"]) if row["expected_risk"] is not None else None,
+        "holdings": holdings,
+    }
+
+
 @app.exception_handler(RequestValidationError)
 async def on_validation_error(request: Request, exc: RequestValidationError):
     # Keep every error response in the same {"detail": "<string>"} shape the
@@ -94,3 +157,61 @@ def api_optimize(req: OptimizeRequest):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Could not fetch/optimize: {e}")
+
+
+@app.post("/api/portfolio-value")
+def api_portfolio_value(req: PortfolioValueRequest):
+    """Re-prices a saved portfolio's holdings (ticker + notional share count)
+    against today's live prices - what powers "how has my saved R100 done".
+    The saved portfolio itself lives in the browser's localStorage, not here;
+    this endpoint only ever sees a holdings list, never anything persistent."""
+    tickers = [h.ticker for h in req.holdings]
+    try:
+        prices, as_of = get_current_prices(tickers)
+    except PortfolioError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not fetch current prices: {e}")
+
+    rows = []
+    total = 0.0
+    for h in req.holdings:
+        price = prices[h.ticker]
+        value = h.shares * price
+        total += value
+        rows.append({"ticker": h.ticker, "shares": h.shares, "price": price, "value": value})
+
+    return {"holdings": rows, "total_value": total, "as_of": as_of}
+
+
+@app.post("/api/saved-portfolios")
+def api_save_portfolio(req: SavePortfolioRequest):
+    try:
+        row = db.insert_saved_portfolio(
+            kind=req.kind, principal=req.principal,
+            holdings=[h.model_dump() for h in req.holdings],
+            expected_return=req.expected_return, expected_risk=req.expected_risk,
+        )
+    except db.DatabaseUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    return _serialize_saved(row)
+
+
+@app.get("/api/saved-portfolios")
+def api_list_saved_portfolios():
+    try:
+        rows = db.list_saved_portfolios()
+    except db.DatabaseUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    return [_serialize_saved(r) for r in rows]
+
+
+@app.delete("/api/saved-portfolios/{portfolio_id}")
+def api_delete_saved_portfolio(portfolio_id: str):
+    try:
+        deleted = db.delete_saved_portfolio(portfolio_id)
+    except db.DatabaseUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Saved portfolio not found")
+    return {"deleted": True}

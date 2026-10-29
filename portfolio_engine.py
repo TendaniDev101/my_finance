@@ -73,6 +73,25 @@ UNIVERSE = {
     "DTC.JO": ("Datatec", "Tech / Media"), "CAT.JO": ("Caxton & CTP Publishers", "Tech / Media"),
     "BYI.JO": ("Bytes Technology Group", "Tech / Media"), "TKG.JO": ("Telkom", "Telecoms"),
     "ADH.JO": ("AdvTech", "Education"),
+
+    # --- third added batch: verified valid + ZAc currency on Yahoo ---
+    "BOX.JO": ("Boxer Retail", "Consumer Staples"), "NPK.JO": ("Nampak", "Packaging"),
+
+    # --- fourth added batch: verified valid + ZAc currency on Yahoo ---
+    "JSE.JO": ("JSE Limited", "Financial Services"), "FBR.JO": ("Famous Brands", "Food"),
+    "MTM.JO": ("Momentum Group", "Insurance"), "AFE.JO": ("AECI", "Mining / Chemicals"),
+    "VAL.JO": ("Valterra Platinum", "Mining"), "BHG.JO": ("BHP Group", "Mining"),
+
+    # --- fifth added batch: cross-checked against a user-supplied "top JSE
+    # companies" list, verified valid + ZAc currency on Yahoo. (MultiChoice/
+    # MCG from that list is correctly excluded - confirmed delisted Dec 2025.
+    # ARM/MTS from that list don't resolve on Yahoo - our existing ARI.JO/
+    # MTH.JO are the correct tickers for those same two companies.) ---
+    "NY1.JO": ("Ninety One", "Diversified Financials"), "BLU.JO": ("Blue Label Telecoms", "Tech / Media"),
+    "ANG.JO": ("AngloGold Ashanti", "Mining"), "SAP.JO": ("Sappi", "Packaging"),
+    "MNP.JO": ("Mondi", "Packaging"), "ANH.JO": ("Anheuser-Busch InBev", "Beverages"),
+    "BTI.JO": ("British American Tobacco", "Tobacco"), "FTA.JO": ("Fairvest", "Property"),
+    "SSU.JO": ("Southern Sun", "Hospitality & Gaming"), "TSG.JO": ("Tsogo Sun", "Hospitality & Gaming"),
 }
 
 MIN_TICKERS, MAX_TICKERS = 2, 25
@@ -215,7 +234,8 @@ def build_portfolio(tickers: list[str]) -> dict:
                     "trading_days": len(prices)},
         "assets": [
             {"ticker": t, "name": UNIVERSE[t][0], "sector": UNIVERSE[t][1],
-             "ann_return": float(mu[t]), "ann_vol": float(ind_vol[i])}
+             "ann_return": float(mu[t]), "ann_vol": float(ind_vol[i]),
+             "price": float(prices[t].iloc[-1])}
             for i, t in enumerate(tickers)
         ],
         "frontier": [{"risk": r, "return": ret} for r, ret in zip(frontier_risk, frontier_return)],
@@ -232,3 +252,23 @@ def build_portfolio(tickers: list[str]) -> dict:
         },
         "risk_free_rate": ZAR_RISK_FREE_RATE,
     }
+
+
+def get_current_prices(tickers: list[str]) -> tuple[dict[str, float], str]:
+    """Latest close price per ticker, for valuing a previously-saved
+    portfolio against today's market. Deliberately lighter than
+    build_portfolio() - skips the optimization entirely, just fetches and
+    reads off the last row, since this gets called every time someone
+    reopens a saved portfolio to see how it's done."""
+    tickers = [t.upper() for t in tickers]
+    unknown = [t for t in tickers if t not in UNIVERSE]
+    if unknown:
+        raise PortfolioError(f"Not in the supported JSE universe: {', '.join(unknown)}")
+
+    prices = fetch_prices(tickers, period="5d")
+    missing = [t for t in tickers if t not in prices.columns]
+    if missing:
+        raise PortfolioError(f"No current price available for: {', '.join(missing)}")
+
+    latest = prices.iloc[-1]
+    return {t: float(latest[t]) for t in tickers}, str(prices.index[-1].date())

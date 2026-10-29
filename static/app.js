@@ -13,6 +13,15 @@ const SECTOR_ICONS = {
 
 const COLOR = { blue: "#2a78d6", red: "#e34948", aqua: "#1baf7a", muted: "#898781", grid: "#e1e0d9", ink: "#0b0b0b" };
 
+// Saved portfolios are persisted server-side via /api/saved-portfolios, backed
+// by Postgres (see db.py). Locally that's a Homebrew Postgres instance; on a
+// real deployment DATABASE_URL needs to point at something Cloud Run can
+// actually reach (its own filesystem is stateless, and it can't reach a
+// database sitting on someone's laptop) - that's a separate, not-yet-made
+// decision (Cloud SQL / Neon / Supabase). Until DATABASE_URL is wired up
+// there, these endpoints 503 - handled below by just showing an error.
+const SAVE_PRINCIPAL = 100; // the hypothetical "invest R100" amount
+
 Chart.register(ChartDataLabels);
 Chart.defaults.set("plugins.datalabels", { display: false });
 
@@ -33,6 +42,45 @@ createApp({
     const result = ref(null);
     const chartCanvas = ref(null);
     let chartInstance = null;
+
+    const savedPortfolios = reactive([]);
+    const savedError = ref("");
+    const savedLoading = ref(false);
+
+    async function loadSavedPortfolios() {
+      savedLoading.value = true;
+      savedError.value = "";
+      try {
+        const res = await fetch("/api/saved-portfolios");
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.detail || "Could not load saved portfolios");
+        savedPortfolios.splice(0, savedPortfolios.length, ...body.map(fromApiShape));
+      } catch (err) {
+        savedError.value = err.message;
+      } finally {
+        savedLoading.value = false;
+      }
+    }
+
+    // The DB stores kind/principal/holdings/expected_return/expected_risk;
+    // everything else the UI needs (label, live current_value, refreshing
+    // state) is derived/ephemeral and only ever lives in memory.
+    function fromApiShape(row) {
+      return {
+        id: row.id,
+        kind: row.kind,
+        label: row.kind === "max_sharpe" ? "Max-Sharpe" : "Min-variance",
+        saved_at: row.saved_at,
+        principal: row.principal,
+        holdings: row.holdings,
+        expected_return: row.expected_return,
+        expected_risk: row.expected_risk,
+        current_value: null,
+        as_of: null,
+        refreshing: false,
+        error: null,
+      };
+    }
 
     async function loadUniverse() {
       const res = await fetch("/api/universe");
@@ -106,11 +154,98 @@ createApp({
     const portfolioCards = computed(() =>
       result.value
         ? [
-            { label: "Max-Sharpe portfolio", data: result.value.max_sharpe },
-            { label: "Min-variance portfolio", data: result.value.min_variance },
+            { key: "max_sharpe", label: "Max-Sharpe portfolio", data: result.value.max_sharpe },
+            { key: "min_variance", label: "Min-variance portfolio", data: result.value.min_variance },
           ]
         : []
     );
+
+    async function savePortfolio(key) {
+      if (!result.value) return;
+      const portfolio = result.value[key];
+      const assetsByTicker = Object.fromEntries(result.value.assets.map((a) => [a.ticker, a]));
+
+      const holdings = Object.entries(portfolio.weights).map(([ticker, weight]) => {
+        const price = assetsByTicker[ticker]?.price;
+        return {
+          ticker,
+          name: assetsByTicker[ticker]?.name ?? ticker,
+          weight,
+          price_at_save: price,
+          shares: (weight * SAVE_PRINCIPAL) / price,
+        };
+      });
+
+      savedError.value = "";
+      try {
+        const res = await fetch("/api/saved-portfolios", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            kind: key, principal: SAVE_PRINCIPAL, holdings,
+            expected_return: portfolio.return, expected_risk: portfolio.risk,
+          }),
+        });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.detail || "Could not save this portfolio");
+        savedPortfolios.unshift(fromApiShape(body));
+      } catch (err) {
+        savedError.value = err.message;
+      }
+    }
+
+    async function removeSavedPortfolio(id) {
+      savedError.value = "";
+      try {
+        const res = await fetch(`/api/saved-portfolios/${id}`, { method: "DELETE" });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.detail || "Could not remove this portfolio");
+        }
+        const i = savedPortfolios.findIndex((e) => e.id === id);
+        if (i >= 0) savedPortfolios.splice(i, 1);
+      } catch (err) {
+        savedError.value = err.message;
+      }
+    }
+
+    async function refreshSavedPortfolio(entry) {
+      entry.refreshing = true;
+      entry.error = null;
+      try {
+        const res = await fetch("/api/portfolio-value", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ holdings: entry.holdings.map((h) => ({ ticker: h.ticker, shares: h.shares })) }),
+        });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.detail || "Could not refresh");
+        entry.current_value = body.total_value;
+        entry.as_of = body.as_of;
+      } catch (err) {
+        entry.error = err.message;
+      } finally {
+        entry.refreshing = false;
+      }
+    }
+
+    function refreshAllSavedPortfolios() {
+      savedPortfolios.forEach(refreshSavedPortfolio);
+    }
+
+    function gainPct(entry) {
+      if (entry.current_value == null) return null;
+      return (entry.current_value - entry.principal) / entry.principal;
+    }
+
+    function elapsedLabel(isoDate) {
+      const days = Math.floor((Date.now() - new Date(isoDate).getTime()) / 86400000);
+      if (days <= 0) return "today";
+      if (days === 1) return "1 day ago";
+      if (days < 30) return `${days} days ago`;
+      const months = Math.floor(days / 30);
+      return months === 1 ? "1 month ago" : `${months} months ago`;
+    }
 
     async function buildPortfolio() {
       errorMsg.value = "";
@@ -140,20 +275,27 @@ createApp({
       const frontierPoints = data.frontier.map((p) => ({ x: p.risk, y: p.return })).sort((a, b) => a.x - b.x);
       const assetPoints = data.assets.map((a) => ({ x: a.ann_vol, y: a.ann_return, label: shortTicker(a.ticker) }));
 
+      // Chart.js's `order` is counterintuitive (confirmed against Chart.js's
+      // own docs after the first attempt at this got it backwards): HIGHER
+      // order is drawn FIRST, so it ends up UNDERNEATH; LOWER order is drawn
+      // LAST, so it ends up ON TOP. The frontier line needs the highest
+      // number (drawn first/underneath) so the point markers - especially
+      // Max Sharpe, which sits mid-curve, not at an endpoint - render on top
+      // of it instead of being cut through by the line.
       const datasets = [
         {
           type: "line", label: "Efficient frontier", data: frontierPoints,
-          borderColor: COLOR.blue, borderWidth: 2, pointRadius: 0, fill: false, tension: 0.15, order: 3,
+          borderColor: COLOR.blue, borderWidth: 2, pointRadius: 0, fill: false, tension: 0.15, order: 4,
         },
         {
           type: "scatter", label: "Individual stocks", data: assetPoints,
-          backgroundColor: COLOR.muted, pointRadius: 5, order: 2,
+          backgroundColor: COLOR.muted, pointRadius: 5, order: 3,
           datalabels: { display: true, formatter: (v) => v.label, align: "top", color: COLOR.ink, font: { size: 10 } },
         },
         {
           type: "scatter", label: "Min variance",
           data: [{ x: data.min_variance.risk, y: data.min_variance.return, label: "Min Var" }],
-          backgroundColor: COLOR.aqua, pointStyle: "rectRot", pointRadius: 9, order: 1,
+          backgroundColor: COLOR.aqua, pointStyle: "rectRot", pointRadius: 9, order: 2,
           datalabels: { display: true, formatter: (v) => v.label, align: "bottom", color: COLOR.aqua, font: { size: 11, weight: "bold" } },
         },
         {
@@ -170,6 +312,7 @@ createApp({
         data: { datasets },
         options: {
           responsive: true,
+          maintainAspectRatio: false, // fill .chart-wrap's fixed CSS height instead of deriving height from width
           interaction: { mode: "nearest", intersect: true },
           plugins: {
             legend: { position: "bottom" },
@@ -188,12 +331,15 @@ createApp({
     }
 
     loadUniverse();
+    loadSavedPortfolios().then(refreshAllSavedPortfolios);
 
     return {
       universe, bySector, selected, search, view, currentSector, loading, errorMsg, result, chartCanvas,
       maxTickers, sectors, searchResults, canBuild, portfolioCards,
       isSelected, isDisabled, chipClass, toggle, clearSelection, openSector,
       shortTicker, sectorIcon, pct, sortedWeights, buildPortfolio,
+      savedPortfolios, savedError, savedLoading, savePortfolio, removeSavedPortfolio,
+      refreshSavedPortfolio, refreshAllSavedPortfolios, gainPct, elapsedLabel,
     };
   },
 }).mount("#app");

@@ -192,10 +192,36 @@ section.picker h2 { font-size: 1.15rem; }
 .error { color: var(--red); margin-top: 12px; }
 .muted { color: var(--ink-secondary); font-size: 0.85rem; }
 
-.loading-text {
+.loader-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--card-shadow);
+  border-radius: 16px;
+  padding: 48px 28px;
   margin-top: 20px;
-  color: var(--ink-secondary);
-  font-style: italic;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+}
+.loader-card p { margin: 0; font-size: 0.98rem; color: var(--ink); }
+.loader-card p.muted { font-size: 0.85rem; }
+
+.spinner {
+  width: 40px;
+  height: 40px;
+  border: 4px solid var(--grid);
+  border-top-color: var(--brand);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin-bottom: 6px;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation-duration: 2.4s; }
 }
 
 /* --- selection bar actions / search --- */
@@ -242,7 +268,16 @@ section#results {
   margin-top: 20px;
 }
 
-.chart-wrap { margin-top: 12px; }
+/* Fixed height, not just a width-derived aspect ratio - the container got
+   much wider when the sector grid was widened, and without this the chart's
+   default aspect ratio made it balloon tall enough to need scrolling. Paired
+   with maintainAspectRatio:false in the Chart.js config below. */
+.chart-wrap {
+  margin-top: 12px;
+  position: relative;
+  height: min(50vh, 440px);
+}
+.chart-wrap canvas { max-width: 100%; }
 
 .portfolios {
   display: grid;
@@ -267,3 +302,88 @@ section#results {
 .portfolio-card td, .portfolio-card th { padding: 4px 0; text-align: left; }
 .portfolio-card th { color: var(--muted); font-weight: 500; }
 .portfolio-card td:last-child, .portfolio-card th:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+
+.save-btn {
+  margin-top: 14px;
+  width: 100%;
+  background: var(--brand-light);
+  color: var(--brand-dark);
+  border: 1px solid var(--brand);
+  border-radius: 8px;
+  padding: 9px 14px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.save-btn:hover { background: #dcebfa; }
+
+/* --- saved portfolios (step 3) --- */
+.saved-section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--card-shadow);
+  border-radius: 16px;
+  padding: 24px 28px;
+  margin-top: 20px;
+}
+.saved-header { display: flex; justify-content: space-between; align-items: center; }
+.saved-header h2 { margin: 0; }
+.refresh-all-btn, .refresh-btn {
+  border: 1px solid var(--grid);
+  background: white;
+  color: var(--ink-secondary);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+.refresh-all-btn:hover, .refresh-btn:hover:not(:disabled) { border-color: var(--brand); color: var(--brand); }
+.refresh-btn { width: 100%; margin-top: 12px; }
+.refresh-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.saved-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+}
+.saved-card {
+  border: 1px solid var(--grid);
+  border-radius: 12px;
+  padding: 16px 18px;
+}
+.saved-card-header { display: flex; justify-content: space-between; align-items: flex-start; }
+.saved-kind {
+  display: inline-block;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--brand-light);
+  color: var(--brand-dark);
+}
+.saved-kind.min_variance { background: #e3f7ee; color: #0e8a57; }
+.remove-saved-btn {
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.remove-saved-btn:hover { color: var(--red); }
+
+.saved-meta { color: var(--muted); font-size: 0.78rem; margin: 6px 0 12px; }
+
+.saved-value { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.value-now { font-size: 1.4rem; font-weight: 700; }
+.value-change { font-size: 0.9rem; font-weight: 700; }
+.value-change.gain { color: #0e8a57; }
+.value-change.loss { color: var(--red); }
+
+.saved-holdings { width: 100%; border-collapse: collapse; font-size: 0.8rem; margin-top: 12px; }
+.saved-holdings th { color: var(--muted); font-weight: 500; text-align: left; padding: 3px 0; }
+.saved-holdings td { padding: 3px 0; }
+.saved-holdings td:not(:first-child), .saved-holdings th:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }

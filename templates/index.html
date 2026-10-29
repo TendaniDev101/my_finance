@@ -96,7 +96,7 @@
         <p class="muted">Based on live daily prices, {{ result.window.start }} to {{ result.window.end }}
            ({{ result.window.trading_days }} trading days). Risk-free rate: {{ pct(result.risk_free_rate) }}.</p>
 
-        <div class="chart-wrap"><canvas ref="chartCanvas" height="420"></canvas></div>
+        <div class="chart-wrap"><canvas ref="chartCanvas"></canvas></div>
 
         <div class="portfolios">
           <div class="portfolio-card" v-for="p in portfolioCards" :key="p.label">
@@ -115,12 +115,73 @@
                 <tr v-if="p.data.sharpe !== undefined"><td>Sharpe ratio</td><td>{{ p.data.sharpe.toFixed(2) }}</td></tr>
               </tfoot>
             </table>
+            <button class="save-btn" @click="savePortfolio(p.key)">
+              &#128190; Save &amp; track with a hypothetical R100
+            </button>
           </div>
         </div>
       </section>
     </transition>
 
-    <p v-if="loading" class="loading-text">Fetching live data and optimizing&hellip;</p>
+    <section v-if="savedPortfolios.length || savedError" class="saved-section">
+      <div class="saved-header">
+        <h2>3. Saved portfolios</h2>
+        <button v-if="savedPortfolios.length" class="refresh-all-btn" @click="refreshAllSavedPortfolios">&#8635; Refresh all</button>
+      </div>
+      <p class="muted">Each save is a snapshot: R100 split across that portfolio's weights at the prices on the day
+         you saved it. Values below are what those same holdings are worth at today's live prices.</p>
+      <p v-if="savedError" class="error">{{ savedError }}</p>
+
+      <div v-if="savedPortfolios.length" class="saved-grid">
+        <div v-for="entry in savedPortfolios" :key="entry.id" class="saved-card">
+          <div class="saved-card-header">
+            <span class="saved-kind" :class="entry.kind">{{ entry.label }}</span>
+            <button class="remove-saved-btn" @click="removeSavedPortfolio(entry.id)" aria-label="Remove">&times;</button>
+          </div>
+          <p class="saved-meta">Saved {{ elapsedLabel(entry.saved_at) }} &middot; {{ new Date(entry.saved_at).toLocaleDateString() }}</p>
+
+          <div class="saved-value">
+            <template v-if="entry.current_value != null">
+              <span class="value-now">R{{ entry.current_value.toFixed(2) }}</span>
+              <span class="value-change" :class="gainPct(entry) >= 0 ? 'gain' : 'loss'">
+                {{ gainPct(entry) >= 0 ? '+' : '' }}{{ pct(gainPct(entry)) }}
+              </span>
+              <span class="muted">from R{{ entry.principal.toFixed(0) }} &middot; as of {{ entry.as_of }}</span>
+            </template>
+            <template v-else-if="entry.refreshing">
+              <span class="muted">Checking current prices&hellip;</span>
+            </template>
+            <template v-else>
+              <span class="muted">Not refreshed yet</span>
+            </template>
+          </div>
+          <p v-if="entry.error" class="error">{{ entry.error }}</p>
+
+          <table class="saved-holdings">
+            <thead><tr><th>Stock</th><th>Then</th><th>Shares</th></tr></thead>
+            <tbody>
+              <tr v-for="h in entry.holdings" :key="h.ticker">
+                <td>{{ shortTicker(h.ticker) }}</td>
+                <td>R{{ h.price_at_save.toFixed(2) }}</td>
+                <td>{{ h.shares.toFixed(4) }}</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <button class="refresh-btn" :disabled="entry.refreshing" @click="refreshSavedPortfolio(entry)">
+            {{ entry.refreshing ? "Refreshing…" : "Refresh this one" }}
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <transition name="fade">
+      <section v-if="loading" class="loader-card">
+        <div class="spinner" aria-hidden="true"></div>
+        <p>Fetching live data and optimizing&hellip;</p>
+        <p class="muted">Live Yahoo Finance data + a fresh efficient-frontier solve - usually a few seconds.</p>
+      </section>
+    </transition>
   </main>
 </div>
 
